@@ -60,7 +60,7 @@ If the available excerpts are insufficient or contradictory, state that clearly.
 
 OUTPUT FORMAT:
 Findings: provide 4-6 concise bullets. Each bullet should include a claim and a short explanation.
-Evidence: for each finding, list the site, interviewee number, collar type, role, question number, and 1-2 short quotes of at most 25 words each.
+Evidence: for each finding, list the site, interviewee number, collar type, role, question number, and 1-2 short quotes of at most 25 words each. If a similar claim was made by two or more people, prioritize that above the others.
 
 RULES:
 Do not use outside knowledge. Do not invent facts.
