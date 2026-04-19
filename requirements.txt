@@ -4,6 +4,8 @@ openai>=1,<3
 pysqlite3-binary; platform_system == "Linux"
 pillow>=10,<12
 numpy<2
+posthog>=2.4,<3
+urllib3<2
 
 # ChromaDB currently pulls opentelemetry-proto 1.11.1 on Streamlit Cloud.
 # Those generated protobuf files are incompatible with protobuf 4+ runtimes.
