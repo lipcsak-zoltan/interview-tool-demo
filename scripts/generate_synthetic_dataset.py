@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
-"""Generate the reviewed synthetic interview dataset for the public demo."""
+"""Generate the synthetic interview dataset with one GPT call per answer."""
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
+import random
+import time
 from pathlib import Path
+
+from openai import OpenAI
 
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_PATH = ROOT / "data" / "synthetic_interviews.jsonl"
+DEFAULT_MODEL = "gpt-4o"
+DEFAULT_TEMPERATURE = 1.0
+
+COMPANY_NAME = "Hungarian Coal Mining Industrial Association"
 
 QUESTIONS = [
     "Overall, how would you describe your experience working here?",
@@ -40,6 +50,39 @@ SITES = {
         "opportunity": "better coordination between office planning and field reality",
     },
 }
+
+MOODS = [
+    "happy",
+    "hopeful",
+    "calm",
+    "focused",
+    "inspired",
+    "curious",
+    "proud",
+    "thoughtful",
+    "motivated",
+    "grateful",
+    "patient",
+    "optimistic",
+    "reflective",
+    "a little tired",
+    "a bit sad",
+    "mildly concerned",
+    "quietly confident",
+]
+
+ANSWER_ANGLES = [
+    "daily routines",
+    "communication timing",
+    "recognition",
+    "career growth",
+    "team trust",
+    "workload pressure",
+    "decision follow-through",
+    "manager support",
+    "safety culture",
+    "practical improvement",
+]
 
 PERSONA_BY_INTERVIEWEE = {
     1: ("white", "manager"),
@@ -180,32 +223,26 @@ INTERVIEWEE_TRAITS = {
     },
 }
 
-QUESTION_INTROS = {
-    1: [
-        "The experience is generally solid, although not effortless.",
-        "I would describe the workplace as dependable, with some stubborn sources of drag.",
-        "Most days feel purposeful, but progress depends on how well different parts of the organization line up.",
-    ],
-    2: [
-        "Communication works best when it explains both the decision and the tradeoff behind it.",
-        "The useful messages are the ones that arrive before people have already adjusted their own plans.",
-        "I do not need every detail, but I do need the reason, the owner, and the timing.",
-    ],
-    3: [
-        "Pay and recognition feel acceptable overall, but the signal is uneven.",
-        "The formal package is not the main complaint; visibility of effort is the weaker point.",
-        "People usually know who contributes, but the organization does not always show that it knows.",
-    ],
-}
 
-
-def cycle(values: list[str], site: str, interviewee_no: int, question_no: int) -> str:
-    site_offset = list(SITES).index(site)
-    return values[(site_offset + interviewee_no + question_no) % len(values)]
-
-
-def sentence_case(text: str) -> str:
-    return text[:1].upper() + text[1:] if text else text
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
+    parser.add_argument("--model", default=os.getenv("OPENAI_CHAT_MODEL", DEFAULT_MODEL))
+    parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
+    parser.add_argument("--seed", type=int, default=None, help="Optional seed for repeatable mood selection.")
+    parser.add_argument("--delay", type=float, default=0.0, help="Seconds to sleep after each API call.")
+    parser.add_argument("--max-retries", type=int, default=3)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Keep rows already present in the output file and generate only missing ids.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Generate deterministic placeholder answers without calling the OpenAI API.",
+    )
+    return parser.parse_args()
 
 
 def persona_label(collar: str, role: str) -> str:
@@ -213,124 +250,211 @@ def persona_label(collar: str, role: str) -> str:
     return f"{collar_label} {role}"
 
 
-def answer_for(site: str, interviewee_no: int, question_no: int) -> str:
+def get_openai_api_key() -> str:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        return api_key
+
+    secrets_path = ROOT / ".streamlit" / "secrets.toml"
+    if not secrets_path.exists():
+        return ""
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        for line in secrets_path.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition("=")
+            if separator and key.strip() == "OPENAI_API_KEY":
+                return value.strip().strip("\"'")
+        return ""
+
+    with secrets_path.open("rb") as handle:
+        secrets = tomllib.load(handle)
+    return secrets.get("OPENAI_API_KEY", "")
+
+
+def build_prompt(site: str, interviewee_no: int, question_no: int, mood: str) -> str:
     collar, role = PERSONA_BY_INTERVIEWEE[interviewee_no]
     profile = PERSONA_PROFILES[(collar, role)]
     site_profile = SITES[site]
     trait = INTERVIEWEE_TRAITS[interviewee_no]
+    global_interviewee_no = list(SITES).index(site) * 10 + interviewee_no
+    angle = ANSWER_ANGLES[(global_interviewee_no + question_no) % len(ANSWER_ANGLES)]
+    question = QUESTIONS[question_no - 1]
+
+    return (
+        f"Give a one sentence answer to the following question as a person working for "
+        f"{COMPANY_NAME}, your role is {role} and {collar}-collar, your mood is {mood}. "
+        f"The question is the following: {question}\n\n"
+        f"Keep this answer clearly different from the other synthetic answers. You are fictional interviewee "
+        f"{global_interviewee_no} of 30, also known as {site} interviewee #{interviewee_no}. Your site strength is "
+        f"{site_profile['strength']}; your site friction is {site_profile['friction']}; your site improvement "
+        f"opportunity is {site_profile['opportunity']}. Your personal focus is {trait['focus']}; your usual "
+        f"frustration is {trait['frustration']}; your recognition signal is {trait['recognition']}; your growth "
+        f"interest is {trait['growth']}; your workload pressure is {trait['balance']}. Your broader role lens is: "
+        f"{profile['lens']}. For this answer, emphasize {angle} without naming the mood."
+    )
+
+
+def system_prompt() -> str:
+    return (
+        "You generate fictional employee interview answers for a public demo dataset. Return exactly one sentence, "
+        "plain text only, with no quotation marks, bullets, labels, or preamble. Vary sentence structure, vocabulary, "
+        "and concrete details from answer to answer. Do not mention that the data is synthetic. Do not mention real "
+        "Hungarian companies, towns, public figures, or identifiable people."
+    )
+
+
+def normalize_answer(answer: str) -> str:
+    answer = " ".join(answer.strip().strip("\"'").split())
+    return answer
+
+
+def generate_answer(
+    client: OpenAI,
+    *,
+    model: str,
+    temperature: float,
+    site: str,
+    interviewee_no: int,
+    question_no: int,
+    mood: str,
+    max_retries: int,
+) -> str:
+    prompt = build_prompt(site, interviewee_no, question_no, mood)
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt()},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=temperature,
+                presence_penalty=0.7,
+                frequency_penalty=0.4,
+                max_tokens=90,
+            )
+            answer = response.choices[0].message.content or ""
+            return normalize_answer(answer)
+        except Exception as exc:  # pragma: no cover - exercised only against the API.
+            last_error = exc
+            if attempt == max_retries:
+                break
+            time.sleep(2**attempt)
+    raise RuntimeError(f"OpenAI answer generation failed after {max_retries + 1} attempts: {last_error}") from last_error
+
+
+def dry_run_answer(site: str, interviewee_no: int, question_no: int, _mood: str) -> str:
+    collar, role = PERSONA_BY_INTERVIEWEE[interviewee_no]
+    site_profile = SITES[site]
+    trait = INTERVIEWEE_TRAITS[interviewee_no]
     persona = persona_label(collar, role)
-
-    if question_no == 1:
-        intro = cycle(QUESTION_INTROS[1], site, interviewee_no, question_no)
-        return (
-            f"As a {persona}, {intro} {site} benefits from {site_profile['strength']}, which gives daily work "
-            f"a dependable base. My own focus is {trait['focus']}, so I feel the friction when "
-            f"{site_profile['friction']} combines with the fact that {profile['concern']}. {trait['voice']}"
-        )
-    if question_no == 2:
-        intro = cycle(QUESTION_INTROS[2], site, interviewee_no, question_no)
-        return (
-            f"{intro} {profile['communication']} In {site}, the strongest messages are about "
-            f"{site_profile['strength']}. The weak spot for me is {trait['frustration']}. Better communication would "
-            f"mean {profile['need']} and a clearer link to {trait['focus']}."
-        )
-    if question_no == 3:
-        intro = cycle(QUESTION_INTROS[3], site, interviewee_no, question_no)
-        return (
-            f"{intro} Recognition is strongest inside the immediate team, especially for {trait['recognition']}. "
-            f"The concern is that {profile['concern']}, so appreciation can feel private rather than organizational. "
-            f"I would not call it unfair, but I would like rewards and feedback to connect more clearly to "
-            f"{trait['focus']}."
-        )
-    if question_no == 4:
-        return (
-            f"Growth opportunities exist, but they depend too much on the manager and the current workload. "
-            f"{sentence_case(profile['lens'])}, so I notice when learning is planned and when it is improvised. "
-            f"At {site}, people can learn a lot from experienced colleagues, but I would benefit most from "
-            f"{trait['growth']}. A stronger development plan would help people prepare before a role becomes urgent."
-        )
-    if question_no == 5:
-        return (
-            f"Collaboration inside my immediate team is one of the better parts of the job. People share information, "
-            f"cover gaps, and usually assume good intent around {trait['focus']}. Trust becomes weaker across "
-            f"departments when {site_profile['friction']} shows up. The team culture is healthy, but cross-functional "
-            f"work needs more shared context and fewer last-minute corrections."
-        )
-    if question_no == 6:
-        return (
-            f"Workload is manageable in normal weeks and difficult when several priorities land at once. The pattern at "
-            f"{site} is shaped by {site_profile['friction']}. {sentence_case(profile['positive'])}, which helps people "
-            f"absorb pressure for a while. My pressure point is {trait['balance']}. The risk is that goodwill becomes "
-            f"the backup plan, especially when schedules or approvals change late."
-        )
-    if question_no == 7:
-        return (
-            f"My biggest frustration is {trait['frustration']}. People usually want to do the right thing, but plans "
-            f"sometimes move before the people affected by them have enough input. I would change the handoff process "
-            f"so decisions include operational constraints earlier. That would support {site_profile['opportunity']} "
-            f"and reduce the feeling that problems are solved twice."
-        )
-    if question_no == 8:
-        return (
-            f"My direct manager is generally supportive and available when priorities are clear. The best support is "
-            f"practical: removing blockers, translating expectations, and backing the team when tradeoffs are real. "
-            f"At {site}, that support matters most when {site_profile['strength']} has to be protected despite "
-            f"{site_profile['friction']}. The support is less effective when {profile['concern']}. For my work on "
-            f"{trait['focus']}, I value direct feedback more than general praise because it helps me decide what to "
-            f"improve next."
-        )
-    if question_no == 9:
-        return (
-            f"The most visible values are reliability, safety, and helping colleagues finish the work properly. Those "
-            f"values show up in small daily habits, not slogans. At {site}, {site_profile['strength']} reinforces "
-            f"those values. {sentence_case(profile['positive'])}, but the culture also accepts too many slow processes "
-            f"as normal. I see the company at its best when {trait['recognition']} is noticed and practical knowledge "
-            f"shapes the plan."
-        )
-    if question_no == 10:
-        return (
-            f"The single improvement I would choose is better follow-through after decisions are announced. People need "
-            f"to know who owns the next step, what changed, and how success will be checked. This would address "
-            f"{site_profile['friction']} without changing the whole organization again. For me, it would also support "
-            f"{trait['growth']} and make {profile['need']} easier to achieve."
-        )
-    raise ValueError(f"Unsupported question number: {question_no}")
+    return (
+        f"As a {persona} in {site}, I would connect question {question_no} to {trait['focus']}, because the issue of "
+        f"{site_profile['friction']} still affects how clearly people can turn plans into practical work for "
+        f"interviewee {interviewee_no}."
+    )
 
 
-def build_rows() -> list[dict]:
-    rows = []
+def iter_row_specs(rng: random.Random):
     for site in SITES:
-        site_slug = site.lower().replace(" ", "_")
         for interviewee_no in range(1, 11):
-            collar, role = PERSONA_BY_INTERVIEWEE[interviewee_no]
             for question_no, question in enumerate(QUESTIONS, start=1):
-                answer = answer_for(site, interviewee_no, question_no)
-                persona = persona_label(collar, role)
-                text = f"RESPONDENT: {site}, interviewee #{interviewee_no}, {persona}\nQUESTION: {question}\nANSWER: {answer}"
-                rows.append(
-                    {
-                        "id": f"{site_slug}_i{interviewee_no:02d}_q{question_no:02d}",
-                        "site": site,
-                        "question_no": question_no,
-                        "interviewee_no": interviewee_no,
-                        "collar": collar,
-                        "role": role,
-                        "question": question,
-                        "answer": answer,
-                        "text": text,
-                    }
+                yield site, interviewee_no, question_no, question, rng.choice(MOODS)
+
+
+def build_row(site: str, interviewee_no: int, question_no: int, question: str, answer: str) -> dict:
+    site_slug = site.lower().replace(" ", "_")
+    collar, role = PERSONA_BY_INTERVIEWEE[interviewee_no]
+    persona = persona_label(collar, role)
+    text = f"RESPONDENT: {site}, interviewee #{interviewee_no}, {persona}\nQUESTION: {question}\nANSWER: {answer}"
+    return {
+        "id": f"{site_slug}_i{interviewee_no:02d}_q{question_no:02d}",
+        "site": site,
+        "question_no": question_no,
+        "interviewee_no": interviewee_no,
+        "collar": collar,
+        "role": role,
+        "question": question,
+        "answer": answer,
+        "text": text,
+    }
+
+
+def load_existing_rows(path: Path) -> dict[str, dict]:
+    if not path.exists():
+        return {}
+
+    rows_by_id = {}
+    with path.open("r", encoding="utf-8") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{path} line {line_no}: invalid JSON: {exc}") from exc
+            rows_by_id[row["id"]] = row
+    return rows_by_id
+
+
+def write_row(handle, row: dict) -> None:
+    handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    handle.flush()
+
+
+def main() -> int:
+    args = parse_args()
+    rng = random.Random(args.seed)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+
+    existing_rows = load_existing_rows(args.output) if args.resume else {}
+    mode = "a" if args.resume and args.output.exists() else "w"
+    api_key = get_openai_api_key()
+    if not args.dry_run and not api_key:
+        raise SystemExit("OPENAI_API_KEY is required unless --dry-run is used.")
+
+    client = None if args.dry_run else OpenAI(api_key=api_key)
+    generated_count = 0
+    reused_count = 0
+
+    with args.output.open(mode, encoding="utf-8") as handle:
+        for site, interviewee_no, question_no, question, mood in iter_row_specs(rng):
+            row_id = f"{site.lower().replace(' ', '_')}_i{interviewee_no:02d}_q{question_no:02d}"
+            if row_id in existing_rows:
+                reused_count += 1
+                continue
+
+            if args.dry_run:
+                answer = dry_run_answer(site, interviewee_no, question_no, mood)
+            else:
+                assert client is not None
+                answer = generate_answer(
+                    client,
+                    model=args.model,
+                    temperature=args.temperature,
+                    site=site,
+                    interviewee_no=interviewee_no,
+                    question_no=question_no,
+                    mood=mood,
+                    max_retries=args.max_retries,
                 )
-    return rows
+                if args.delay:
+                    time.sleep(args.delay)
 
+            row = build_row(site, interviewee_no, question_no, question, answer)
+            write_row(handle, row)
+            generated_count += 1
+            print(f"Wrote {row_id} with mood '{mood}'", flush=True)
 
-def main() -> None:
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    rows = build_rows()
-    with OUTPUT_PATH.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    print(f"Wrote {len(rows)} synthetic interview chunks to {OUTPUT_PATH}")
+    total_count = reused_count + generated_count
+    print(f"Wrote {total_count} synthetic interview chunks to {args.output}")
+    if args.resume and reused_count:
+        print(f"Reused {reused_count} existing chunks and generated {generated_count} new chunks.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
