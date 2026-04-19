@@ -2,7 +2,7 @@
 
 A public Streamlit demo for retrieval-augmented qualitative interview analysis.
 
-The application uses a fully synthetic dataset about the fictional company **Meridian Industrial Services**. Sites, respondents, roles, answers, and scenarios are invented for portfolio demonstration purposes.
+The application uses a fully synthetic dataset about the fictional company **Hungarian Coal Mining Industrial Services**. Sites, respondents, roles, answers, and scenarios are invented for portfolio demonstration purposes.
 
 ## Live Demo Access
 

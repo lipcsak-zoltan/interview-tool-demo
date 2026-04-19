@@ -9,14 +9,17 @@ from pathlib import Path
 # Must be set before importing chromadb to avoid protobuf C-extension incompatibility.
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "1")
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 
 import streamlit as st
 import streamlit.components.v1 as components
 from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
 
+from demo_embeddings import OpenAIEmbeddingFunction
 
-st.set_page_config(page_title="Synthetic Interview Analysis Assistant", layout="wide")
+
+st.set_page_config(page_title="AI Interview Analysis Assistant", layout="wide")
 
 
 DB_DIR = "db/chroma_demo"
@@ -45,6 +48,11 @@ ROLE_FILTER_OPTIONS = {
     "Manager": "manager",
     "Employee": "employee",
 }
+EXAMPLE_QUESTIONS = [
+    "What do blue-collar employees say about scheduling?",
+    "Compare managers and employees on communication.",
+    "Which sites describe the strongest team collaboration?",
+]
 
 
 DEFAULT_TASK_PROMPT = """TASK: Answer the user's question using only the provided synthetic interview excerpts.
@@ -98,6 +106,14 @@ def check_password() -> bool:
 
     st.caption("Shared portfolio demo password: `demo2026`")
     return False
+
+
+def load_example_question(question: str) -> None:
+    st.session_state["user_query_input"] = question
+
+
+def toggle_sources_menu(expanded_key: str) -> None:
+    st.session_state[expanded_key] = not st.session_state.get(expanded_key, True)
 
 
 if not check_password():
@@ -246,7 +262,7 @@ def format_log_entries(chat_messages, sources_by_turn, start_msg_index=0, start_
 
     if start_msg_index < len(chat_messages):
         if start_msg_index == 0:
-            lines.append("# Synthetic Interview Analysis Assistant - conversation log\n")
+            lines.append("# AI Interview Analysis Assistant - conversation log\n")
 
         for i, msg in enumerate(chat_messages[start_msg_index:], start=start_msg_index + 1):
             role = "User" if msg["role"] == "user" else "Assistant"
@@ -642,16 +658,16 @@ if st.session_state.get("deleted_checkpoint_name"):
 @st.cache_resource
 def get_db_collection(client_api_key: str):
     import chromadb
-    from chromadb.utils import embedding_functions
 
-    ef = embedding_functions.OpenAIEmbeddingFunction(
+    ef = OpenAIEmbeddingFunction(
         api_key=client_api_key,
         model_name="text-embedding-3-large",
     )
     if not os.path.exists(DB_DIR):
         raise FileNotFoundError(f"The database folder '{DB_DIR}' was not found. Run scripts/rebuild_chroma.py first.")
 
-    client = chromadb.PersistentClient(path=DB_DIR)
+    settings = chromadb.Settings(anonymized_telemetry=False)
+    client = chromadb.PersistentClient(path=DB_DIR, settings=settings)
     return client.get_collection(name=COLLECTION_NAME, embedding_function=ef)
 
 
@@ -663,7 +679,7 @@ except Exception as e:
     st.stop()
 
 
-st.title("Synthetic Interview Analysis Assistant")
+st.title("AI Interview Analysis Assistant")
 st.caption(f"Active session ID: `{st.session_state['session_id']}`")
 loaded_from_session_id = st.session_state.get("loaded_from_session_id")
 if loaded_from_session_id:
@@ -673,7 +689,7 @@ if loaded_from_session_id:
         st.info(f"Loaded checkpoint source: `{loaded_from_session_id}`")
 
 st.markdown(
-    "**Ask questions about a fictional workplace interview dataset for Meridian Industrial Services. "
+    "**Ask questions about a fictional workplace interview dataset for Hungarian Coal Mining Industrial Association. "
     "All respondents, sites, and answers are synthetic.**"
 )
 
@@ -684,11 +700,11 @@ st.markdown(
         position: sticky;
         top: 1.25rem;
         z-index: 20;
-        background: rgba(255, 255, 255, 0.96);
-        border: 1px solid rgba(0, 0, 0, 0.08);
+        background: var(--secondary-background-color);
+        border: 1px solid color-mix(in srgb, var(--text-color) 12%, transparent);
         border-radius: 8px;
         padding: 1rem;
-        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.08);
+        box-shadow: 0 6px 24px color-mix(in srgb, var(--text-color) 10%, transparent);
         backdrop-filter: blur(6px);
         margin: 1rem auto 1.5rem auto;
         max-width: 1100px;
@@ -700,6 +716,38 @@ st.markdown(
         align-items: flex-end;
         height: 100%;
     }
+
+    div[data-testid="stForm"] [data-testid="stHorizontalBlock"] [data-testid="stFormSubmitButton"] button {
+        font-size: 0.78rem;
+        line-height: 1.15;
+        min-height: 2.25rem;
+        padding: 0.3rem 0.45rem;
+    }
+
+    .send-button-spacer {
+        height: 1.75rem;
+    }
+
+    button[kind="primaryFormSubmit"],
+    button[data-testid="stBaseButton-primaryFormSubmit"] {
+        background: #111827;
+        border-color: #111827;
+        color: #ffffff;
+        align-items: center;
+        display: inline-flex;
+        font-size: 1.15rem;
+        justify-content: center;
+        line-height: 1;
+        min-width: 3rem;
+        text-align: center;
+    }
+
+    button[kind="primaryFormSubmit"]:hover,
+    button[data-testid="stBaseButton-primaryFormSubmit"]:hover {
+        background: #020617;
+        border-color: #020617;
+        color: #ffffff;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -710,8 +758,19 @@ if st.sidebar.button("Log out"):
     st.rerun()
 
 
-def render_sources_menu(sources_data):
-    with st.expander(f"Retrieved sources ({len(sources_data)})", expanded=True):
+def render_sources_menu(sources_data, menu_id):
+    expanded_key = f"sources_expanded_{menu_id}"
+    st.session_state.setdefault(expanded_key, True)
+    arrow = "▲" if st.session_state[expanded_key] else "▼"
+    st.button(
+        f"Retrieved sources ({len(sources_data)}) {arrow}",
+        key=f"sources_toggle_{menu_id}",
+        on_click=toggle_sources_menu,
+        args=(expanded_key,),
+        use_container_width=True,
+    )
+
+    if st.session_state[expanded_key]:
         for idx, src in enumerate(sources_data, start=1):
             with st.container(border=True):
                 st.markdown(f"#### Source {idx}")
@@ -734,20 +793,32 @@ for msg in st.session_state["chat_messages"]:
             if "sources_by_turn" in st.session_state and len(st.session_state["sources_by_turn"]) > assistant_msg_index:
                 sources = st.session_state["sources_by_turn"][assistant_msg_index]
                 if sources:
-                    render_sources_menu(sources)
+                    render_sources_menu(sources, assistant_msg_index)
             assistant_msg_index += 1
 
 
 with st.form("question_form", clear_on_submit=False):
     st.subheader("Question")
     user_query = st.text_input(
-        "Type your question, for example: What do blue-collar employees say about scheduling?",
-        label_visibility="collapsed",
+        "Type your question",
+        placeholder=EXAMPLE_QUESTIONS[0],
         key="user_query_input",
-    )
+    ).strip()
+
+    st.caption("Examples")
+    example_cols = st.columns(3)
+    for index, example_question in enumerate(EXAMPLE_QUESTIONS, start=1):
+        with example_cols[index - 1]:
+            st.form_submit_button(
+                f"{index}. {example_question}",
+                key=f"example_question_{index}",
+                on_click=load_example_question,
+                args=(example_question,),
+                use_container_width=True,
+            )
 
     filter_col1, filter_col2, filter_col3, filter_col4, filter_col5, submit_col = st.columns(
-        [1.0, 0.8, 1.0, 0.9, 0.7, 0.22]
+        [1.0, 0.8, 1.0, 0.9, 0.7, 0.32]
     )
 
     with filter_col1:
@@ -767,7 +838,8 @@ with st.form("question_form", clear_on_submit=False):
         top_k = st.number_input("Sources", min_value=1, max_value=20, value=5, step=1, key="top_k")
 
     with submit_col:
-        submit_query = st.form_submit_button("Ask")
+        st.markdown('<div class="send-button-spacer"></div>', unsafe_allow_html=True)
+        submit_query = st.form_submit_button("↑", type="primary", use_container_width=True)
 
     st.caption(
         "Each answer uses the most recent chat history, the retrieved interview excerpts, the session system "

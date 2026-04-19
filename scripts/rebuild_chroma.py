@@ -6,15 +6,18 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import sys
 from pathlib import Path
 
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "1")
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from validate_dataset import DEFAULT_DATASET_PATH, load_rows, validate_rows
 
-
-ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB_DIR = ROOT / "db" / "chroma_demo"
 COLLECTION_NAME = "demo_interviews"
 EMBEDDING_MODEL = "text-embedding-3-large"
@@ -39,17 +42,18 @@ def main() -> int:
         raise SystemExit("Dataset validation failed; run scripts/validate_dataset.py for details.")
 
     import chromadb
-    from chromadb.utils import embedding_functions
+    from demo_embeddings import OpenAIEmbeddingFunction
 
     if args.db_dir.exists():
         shutil.rmtree(args.db_dir)
     args.db_dir.mkdir(parents=True, exist_ok=True)
 
-    embedding_function = embedding_functions.OpenAIEmbeddingFunction(
+    embedding_function = OpenAIEmbeddingFunction(
         api_key=api_key,
         model_name=EMBEDDING_MODEL,
     )
-    client = chromadb.PersistentClient(path=str(args.db_dir))
+    settings = chromadb.Settings(anonymized_telemetry=False)
+    client = chromadb.PersistentClient(path=str(args.db_dir), settings=settings)
     collection = client.create_collection(
         name=COLLECTION_NAME,
         embedding_function=embedding_function,
