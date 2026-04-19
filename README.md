@@ -6,6 +6,8 @@ The application uses a fully synthetic dataset about the fictional company **Hun
 
 ## Live Demo Access
 
+The link to the live demo is the following: https://interview-tool-demo-zoltan-lipcsak.streamlit.app/
+
 Shared demo password: `demo2026`
 
 The password is intentionally low-friction so hiring managers and reviewers can open the demo while reducing casual automated use.
