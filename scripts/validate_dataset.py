@@ -71,6 +71,7 @@ def load_rows(path: Path = DEFAULT_DATASET_PATH) -> list[dict]:
 def validate_rows(rows: list[dict]) -> list[str]:
     errors = []
     ids = [row.get("id") for row in rows]
+    answers = [row.get("answer") for row in rows]
 
     if len(rows) != 300:
         errors.append(f"Expected 300 chunks, found {len(rows)}.")
@@ -78,6 +79,10 @@ def validate_rows(rows: list[dict]) -> list[str]:
     duplicate_ids = [item for item, count in Counter(ids).items() if count > 1]
     if duplicate_ids:
         errors.append(f"Duplicate ids found: {duplicate_ids[:10]}")
+
+    duplicate_answers = [item for item, count in Counter(answers).items() if count > 1]
+    if duplicate_answers:
+        errors.append(f"Duplicate answer texts found: {len(duplicate_answers)} repeated answer(s).")
 
     rows_by_site_interviewee = defaultdict(list)
     rows_by_site_question = defaultdict(list)
@@ -117,7 +122,13 @@ def validate_rows(rows: list[dict]) -> list[str]:
                 f"expected {expected_persona}."
             )
 
-        expected_text = f"QUESTION: {row['question']}\nANSWER: {row['answer']}"
+        collar_label = "white-collar" if collar == "white" else "blue-collar"
+        persona = f"{collar_label} {role}"
+        expected_text = (
+            f"RESPONDENT: {site}, interviewee #{interviewee_no}, {persona}\n"
+            f"QUESTION: {row['question']}\n"
+            f"ANSWER: {row['answer']}"
+        )
         if row["text"] != expected_text:
             errors.append(f"Row {index} text field does not match question/answer.")
 

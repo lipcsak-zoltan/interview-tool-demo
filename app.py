@@ -64,7 +64,8 @@ Evidence: for each finding, list the site, interviewee number, collar type, role
 
 RULES:
 Do not use outside knowledge. Do not invent facts.
-When you generalize, state how many interviewees or excerpts support the claim."""
+When you generalize, state how many interviewees or excerpts support the claim.
+When the user asks for a comparison, separate similarities from differences and state which groups are represented."""
 
 DEFAULT_SYSTEM_PROMPT = (
     "ROLE: You are a helpful organizational research analyst specializing in qualitative "
@@ -511,6 +512,65 @@ def build_where_clause(site_label: str, question_label: str, collar_label: str, 
     return {"$and": filters}
 
 
+def requested_diversity_keys(query: str, site_label: str, collar_label: str, role_label: str) -> list[str]:
+    query_lower = query.lower()
+    keys = []
+
+    if role_label == "All" and "manager" in query_lower and "employee" in query_lower:
+        keys.append("role")
+    if collar_label == "All" and (
+        ("white" in query_lower and "blue" in query_lower) or "collar" in query_lower or "collars" in query_lower
+    ):
+        keys.append("collar")
+    if site_label == "All" and ("site" in query_lower or "sites" in query_lower):
+        keys.append("site")
+
+    return keys
+
+
+def preferred_values_for_key(key: str) -> list[str]:
+    if key == "role":
+        return ["manager", "employee"]
+    if key == "collar":
+        return ["white", "blue"]
+    if key == "site":
+        return ["Site A", "Site B", "Site C"]
+    return []
+
+
+def select_diverse_sources(docs: list[str], metas: list[dict], top_k: int, diversity_keys: list[str]) -> tuple[list[str], list[dict]]:
+    if not diversity_keys:
+        return docs[:top_k], metas[:top_k]
+
+    selected_indices = []
+    primary_key = diversity_keys[0]
+    primary_values = preferred_values_for_key(primary_key)
+
+    while len(selected_indices) < top_k:
+        added_this_round = False
+        for value in primary_values:
+            for index, meta in enumerate(metas):
+                if index in selected_indices:
+                    continue
+                if meta.get(primary_key) == value:
+                    selected_indices.append(index)
+                    added_this_round = True
+                    break
+            if len(selected_indices) >= top_k:
+                break
+        if not added_this_round:
+            break
+
+    for index in range(len(docs)):
+        if len(selected_indices) >= top_k:
+            break
+        if index not in selected_indices:
+            selected_indices.append(index)
+
+    selected_indices = selected_indices[:top_k]
+    return [docs[index] for index in selected_indices], [metas[index] for index in selected_indices]
+
+
 def init_state_once():
     if "session_loaded" in st.session_state:
         return
@@ -854,13 +914,18 @@ if submit_query and user_query.strip():
     st.session_state["chat_messages"].append({"role": "user", "content": user_query})
 
     where_clause = build_where_clause(site_filter, question_filter, collar_filter, role_filter)
+    diversity_keys = requested_diversity_keys(user_query, site_filter, collar_filter, role_filter)
+    candidate_count = int(top_k)
+    if diversity_keys:
+        candidate_count = min(collection.count(), max(int(top_k) * 4, int(top_k)))
 
     with st.spinner("Searching the interview database and drafting an answer..."):
         try:
-            results = collection.query(query_texts=[user_query], n_results=int(top_k), where=where_clause)
+            results = collection.query(query_texts=[user_query], n_results=candidate_count, where=where_clause)
 
             docs = results["documents"][0] if results["documents"] else []
             metas = results["metadatas"][0] if results["metadatas"] else []
+            docs, metas = select_diverse_sources(docs, metas, int(top_k), diversity_keys)
 
             if not docs:
                 assistant_text = "No relevant answer was found with the selected filters."
