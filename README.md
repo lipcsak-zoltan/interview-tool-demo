@@ -45,9 +45,12 @@ Set `OPENAI_API_KEY` in `.streamlit/secrets.toml`. Visitors do not need their ow
 Generate and validate the synthetic JSONL dataset:
 
 ```bash
+export OPENAI_API_KEY="your-api-key"
 python scripts/generate_synthetic_dataset.py
 python scripts/validate_dataset.py
 ```
+
+The generator calls `gpt-4o` once for each of the 300 interview answers, assigning a random mild mood per answer and keeping site, role, collar type, and interviewee context in the prompt. Use `--resume` to continue a partial run, or `--dry-run --output /tmp/synthetic_interviews_test.jsonl` to test the JSONL structure without API calls.
 
 Rebuild the Chroma database:
 
