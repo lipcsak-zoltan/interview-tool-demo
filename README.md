@@ -38,7 +38,7 @@ pip install -r requirements.txt
 cp .streamlit/secrets.example.toml .streamlit/secrets.toml
 ```
 
-Set `OPENAI_API_KEY` in `.streamlit/secrets.toml`.
+Set `OPENAI_API_KEY` in `.streamlit/secrets.toml`. Visitors do not need their own key when the deployed app has this secret configured.
 
 ## Dataset And Database
 
@@ -70,4 +70,4 @@ Deploy only this clean demo repository to Streamlit Cloud. Configure these secre
 - `app_password`
 - `OPENAI_CHAT_MODEL` optional, defaults to `gpt-4o`
 
-The generated Chroma database at `db/chroma_demo` is synthetic and safe to publish after validation.
+The deployed app uses the repository's committed synthetic Chroma database at `db/chroma_demo`, so users can sign in with the demo password and start querying immediately. The OpenAI API key should be supplied by the app owner through Streamlit secrets; users are only prompted for a key if the deployment is missing `OPENAI_API_KEY`.
