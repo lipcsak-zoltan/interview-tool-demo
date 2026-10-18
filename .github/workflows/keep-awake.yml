@@ -1,0 +1,46 @@
+name: Keep Streamlit app awake
+
+# Streamlit Community Cloud puts apps to sleep after ~12 hours without
+# visitors. Visiting every 6 hours keeps it awake with margin for the
+# delays GitHub sometimes adds to scheduled runs.
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-awake
+  cancel-in-progress: false
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright
+        run: |
+          pip install playwright==1.48.0
+          python -m playwright install --with-deps chromium
+
+      - name: Visit the app
+        run: python .github/scripts/wake_streamlit.py
+
+      - name: Upload screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wake-screenshot
+          path: wake-screenshot.png
+          retention-days: 3
+          if-no-files-found: ignore
